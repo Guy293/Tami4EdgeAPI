@@ -44,7 +44,7 @@ class Tami4EdgeAPI:
         """Get the access token, refreshing it if necessary."""
 
         if not self._token.is_valid:
-            logging.info("Token is invalid, refreshing Token")
+            logging.debug("Token is invalid, refreshing Token")
 
             response = requests.post(
                 f"{Tami4EdgeAPI.ENDPOINT}/public/token/refresh",
@@ -55,7 +55,7 @@ class Tami4EdgeAPI:
                 logging.error("Token Refresh Failed, response: %s", response)
                 raise Exception("Token Refresh Failed")
 
-            logging.info("Token Refresh Successful")
+            logging.debug("Token Refresh Successful")
 
             self._token = Token(
                 refresh_token=response["refresh_token"],
