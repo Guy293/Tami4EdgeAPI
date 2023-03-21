@@ -1,14 +1,14 @@
 import logging
 from typing import Callable
 
-from pypasser import reCaptchaV3
 import requests
+from pypasser import reCaptchaV3
 from requests.models import PreparedRequest
 
-from Tami4EdgeAPI.token import Token
 from Tami4EdgeAPI.device import Device
 from Tami4EdgeAPI.drink import Drink
-from Tami4EdgeAPI.water_quality import WaterQuality, Filter, UV
+from Tami4EdgeAPI.token import Token
+from Tami4EdgeAPI.water_quality import UV, Filter, WaterQuality
 
 
 class _Auth(requests.auth.AuthBase):
@@ -72,7 +72,6 @@ class Tami4EdgeAPI:
                 id=d["id"],
                 name=d["name"],
                 connected=d["connected"],
-                last_heart_beat=d["lastHeartbeat"],
                 psn=d["psn"],
                 type=d["type"],
                 device_firmware=d["deviceFirmware"],
