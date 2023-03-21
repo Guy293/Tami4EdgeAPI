@@ -17,12 +17,12 @@ pip install Tami4EdgeAPI
 
 You first need to obtain a ``refresh_token`` by requesting an sms code to the phone you registered to the app with.
 ```py
-import Tami4EdgeAPI
+from Tami4EdgeAPI import Tami4EdgeAPI
 
 # You must add the country code!
 phone_number = "+972xxxxxxxxx"
 
-Tami4EdgeAPI.request_otp()
+Tami4EdgeAPI.request_otp(phone_number)
 otp_code = input("Enter OTP: ")
 refresh_token = Tami4EdgeAPI.submit_otp(otp_code)
 ```
