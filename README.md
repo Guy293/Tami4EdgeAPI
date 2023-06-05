@@ -24,7 +24,7 @@ phone_number = "+972xxxxxxxxx"
 
 Tami4EdgeAPI.request_otp(phone_number)
 otp_code = input("Enter OTP: ")
-refresh_token = Tami4EdgeAPI.submit_otp(otp_code)
+refresh_token = Tami4EdgeAPI.submit_otp(phone_number, otp_code)
 ```
 Store the ``refresh_token`` somewhere safe, you will use it to authenticate with the API.
 
