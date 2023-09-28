@@ -2,14 +2,25 @@ import logging
 from typing import Callable
 
 import requests
-from pypasser import reCaptchaV3
 from requests.models import PreparedRequest
+from requests.exceptions import RequestException
 
 from Tami4EdgeAPI.device import Device
 from Tami4EdgeAPI.drink import Drink
 from Tami4EdgeAPI.token import Token
 from Tami4EdgeAPI.water_quality import UV, Filter, WaterQuality
 
+class Tami4EdgeAPIException(Exception):
+    pass
+
+class TokenRefreshFailedException(Tami4EdgeAPIException):
+    pass
+
+class APIRequestFailedException(Tami4EdgeAPIException):
+    pass
+
+class OTPFailedException(Tami4EdgeAPIException):
+    pass
 
 class _Auth(requests.auth.AuthBase):
     def __init__(self, get_access_token: Callable) -> None:
@@ -46,14 +57,17 @@ class Tami4EdgeAPI:
         if not self._token.is_valid:
             logging.debug("Token is invalid, refreshing Token")
 
-            response = requests.post(
-                f"{Tami4EdgeAPI.ENDPOINT}/public/token/refresh",
-                json={"token": self._token.refresh_token},
-            ).json()
+            try:
+                response = requests.post(
+                    f"{Tami4EdgeAPI.ENDPOINT}/public/token/refresh",
+                    json={"token": self._token.refresh_token},
+                ).json()
+            except RequestException as ex:
+                raise TokenRefreshFailedException("Token Refresh Failed") from ex
 
             if "access_token" not in response:
                 logging.error("Token Refresh Failed, response: %s", response)
-                raise Exception("Token Refresh Failed")
+                raise TokenRefreshFailedException("Token Refresh Failed: No access_token")
 
             logging.debug("Token Refresh Successful")
 
@@ -66,7 +80,11 @@ class Tami4EdgeAPI:
         return self._token.access_token
 
     def _get_devices(self) -> list[Device]:
-        response = self._session.get(f"{self.ENDPOINT}/api/v1/device")
+        try:
+            response = self._session.get(f"{self.ENDPOINT}/api/v1/device")
+        except RequestException as ex:
+            raise APIRequestFailedException("Device Request Failed") from ex
+
         return [
             Device(
                 id=d["id"],
@@ -82,7 +100,11 @@ class Tami4EdgeAPI:
     def get_drinks(self) -> list[Drink]:
         """Fetch the drinks."""
 
-        response = self._session.get(f"{self.ENDPOINT}/api/v1/customer/drink")
+        try:
+            response = self._session.get(f"{self.ENDPOINT}/api/v1/customer/drink")
+        except RequestException as ex:
+            raise APIRequestFailedException("Drink Request Failed") from ex
+
         return [
             Drink(
                 id=d["id"],
@@ -119,17 +141,24 @@ class Tami4EdgeAPI:
 
     def prepare_drink(self, drink: Drink) -> None:
         """Prepare a drink."""
-        self._session.post(
-            f"{self.ENDPOINT}/api/v1/device/{self.device.id}/prepareDrink/{drink.id}"
-        )
+        try:
+            self._session.post(
+                f"{self.ENDPOINT}/api/v1/device/{self.device.id}/prepareDrink/{drink.id}"
+            )
+        except RequestException as ex:
+            raise APIRequestFailedException("Drink Prepare Request Failed") from ex
 
     def boil_water(self) -> None:
         """Boil water."""
-        response = self._session.post(
-            f"{self.ENDPOINT}/api/v1/device/{self.device.id}/startBoiling"
-        )
+        try:
+            response = self._session.post(
+                f"{self.ENDPOINT}/api/v1/device/{self.device.id}/startBoiling"
+            )
+        except RequestException as ex:
+            raise APIRequestFailedException("Boil Water Request Failed") from ex
+
         if response.status_code == 502:
-            logging.info("Water is already hot")
+            logging.info("Water is already boiled")
 
     @staticmethod
     def _get_recaptcha_token() -> str:
@@ -138,35 +167,41 @@ class Tami4EdgeAPI:
     @staticmethod
     def request_otp(phone_number: str) -> None:
         """Request an OTP code."""
-        response = requests.post(
-            f"{Tami4EdgeAPI.ENDPOINT}/public/phone/generateOTP",
-            json={
-                "phoneNumber": phone_number,
-                "reCaptchaToken": Tami4EdgeAPI._get_recaptcha_token(),
-            },
-        ).json()
+        try:
+            response = requests.post(
+                f"{Tami4EdgeAPI.ENDPOINT}/public/phone/generateOTP",
+                json={
+                    "phoneNumber": phone_number,
+                    "reCaptchaToken": Tami4EdgeAPI._get_recaptcha_token(),
+                },
+            ).json()
+        except RequestException as ex:
+            raise OTPFailedException("OTP Request Failed") from ex
 
         if not response["success"]:
-            logging.error("OTP Request Failed, response: %s")
-            raise Exception("OTP Request Failed")
+            logging.error("OTP Request Failed, response: %s", response)
+            raise OTPFailedException("OTP Request Failed")
 
         logging.info("OTP Request Successful")
 
     @staticmethod
     def submit_otp(phone_number: str, otp: int) -> str:
         """Submit an OTP code."""
-        response = requests.post(
-            f"{Tami4EdgeAPI.ENDPOINT}/public/phone/submitOTP",
-            json={
-                "phoneNumber": phone_number,
-                "code": otp,
-                "reCaptchaToken": Tami4EdgeAPI._get_recaptcha_token(),
-            },
-        ).json()
+        try:
+            response = requests.post(
+                f"{Tami4EdgeAPI.ENDPOINT}/public/phone/submitOTP",
+                json={
+                    "phoneNumber": phone_number,
+                    "code": otp,
+                    "reCaptchaToken": Tami4EdgeAPI._get_recaptcha_token(),
+                },
+            ).json()
+        except RequestException as ex:
+            raise OTPFailedException("OTP Submission Failed") from ex
 
         if not response["access_token"]:
-            logging.error("OTP Submission Failed, response: %s")
-            raise Exception("OTP Submission Failed")
+            logging.error("OTP Submission Failed, response: %s", response)
+            raise OTPFailedException("OTP Submission Failed")
 
         logging.info("OTP Submission Successful")
 
