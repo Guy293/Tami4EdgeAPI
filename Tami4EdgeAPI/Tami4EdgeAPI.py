@@ -1,34 +1,43 @@
 import logging
-from typing import Callable
+from typing import Callable, Optional
 
 import requests
+from pypasser import reCaptchaV3
+from requests.auth import AuthBase
+from requests.exceptions import JSONDecodeError, RequestException
 from requests.models import PreparedRequest
-from requests.exceptions import RequestException
 
+from Tami4EdgeAPI import exceptions
 from Tami4EdgeAPI.device import Device
 from Tami4EdgeAPI.drink import Drink
 from Tami4EdgeAPI.token import Token
 from Tami4EdgeAPI.water_quality import UV, Filter, WaterQuality
 
-class Tami4EdgeAPIException(Exception):
-    pass
 
-class TokenRefreshFailedException(Tami4EdgeAPIException):
-    pass
-
-class APIRequestFailedException(Tami4EdgeAPIException):
-    pass
-
-class OTPFailedException(Tami4EdgeAPIException):
-    pass
-
-class _Auth(requests.auth.AuthBase):
+class _Auth(AuthBase):
     def __init__(self, get_access_token: Callable) -> None:
         self.get_access_token = get_access_token
 
     def __call__(self, r: PreparedRequest) -> PreparedRequest:
         r.headers["authorization"] = "Bearer " + self.get_access_token()
         return r
+
+
+def request_wrapper(
+    method: str,
+    url: str,
+    *args,
+    session: Optional[requests.Session] = None,
+    exception: Exception,
+    **kwargs,
+) -> requests.models.Response:
+    try:
+        if session:
+            return session.request(method, url, *args, timeout=10, **kwargs)
+        else:
+            return requests.request(method, url, *args, timeout=10, **kwargs)
+    except RequestException as ex:
+        raise exception from ex
 
 
 class Tami4EdgeAPI:
@@ -56,34 +65,47 @@ class Tami4EdgeAPI:
 
         if not self._token.is_valid:
             logging.debug("Token is invalid, refreshing Token")
-
-            try:
-                response = requests.post(
-                    f"{Tami4EdgeAPI.ENDPOINT}/public/token/refresh",
-                    json={"token": self._token.refresh_token},
-                ).json()
-            except RequestException as ex:
-                raise TokenRefreshFailedException("Token Refresh Failed") from ex
-
-            if "access_token" not in response:
-                logging.error("Token Refresh Failed, response: %s", response)
-                raise TokenRefreshFailedException("Token Refresh Failed: No access_token")
-
-            logging.debug("Token Refresh Successful")
-
-            self._token = Token(
-                refresh_token=response["refresh_token"],
-                access_token=response["access_token"],
-                expires_in=response["expires_in"],
-            )
+            self._request_new_token()
 
         return self._token.access_token
 
-    def _get_devices(self) -> list[Device]:
+    def _request_new_token(self):
+        response = request_wrapper(
+            "POST",
+            f"{Tami4EdgeAPI.ENDPOINT}/public/token/refresh",
+            json={"token": self._token.refresh_token},
+            exception=exceptions.TokenRefreshFailedException("Token Refresh Failed"),
+        )
+
+        if "Invalid refresh token (expired)" in response.text:
+            raise exceptions.RefreshTokenExpiredException("Refresh token has expired")
+
         try:
-            response = self._session.get(f"{self.ENDPOINT}/api/v1/device")
-        except RequestException as ex:
-            raise APIRequestFailedException("Device Request Failed") from ex
+            response_json = response.json()
+        except JSONDecodeError as ex:
+            raise exceptions.TokenRefreshFailedException("Token Refresh Failed") from ex
+
+        if "access_token" not in response_json:
+            logging.error("Token Refresh Failed, response: %s", response_json)
+            raise exceptions.TokenRefreshFailedException(
+                "Token Refresh Failed: No access_token key"
+            )
+
+        logging.debug("Token Refresh Successful")
+
+        self._token = Token(
+            refresh_token=response_json["refresh_token"],
+            access_token=response_json["access_token"],
+            expires_in=response_json["expires_in"],
+        )
+
+    def _get_devices(self) -> list[Device]:
+        response = request_wrapper(
+            "GET",
+            f"{self.ENDPOINT}/api/v1/device",
+            session=self._session,
+            exception=exceptions.APIRequestFailedException("Device Request Failed"),
+        )
 
         return [
             Device(
@@ -100,10 +122,12 @@ class Tami4EdgeAPI:
     def get_drinks(self) -> list[Drink]:
         """Fetch the drinks."""
 
-        try:
-            response = self._session.get(f"{self.ENDPOINT}/api/v1/customer/drink")
-        except RequestException as ex:
-            raise APIRequestFailedException("Drink Request Failed") from ex
+        response = request_wrapper(
+            "GET",
+            f"{self.ENDPOINT}/api/v1/customer/drink",
+            session=self._session,
+            exception=exceptions.APIRequestFailedException("Drink Request Failed"),
+        )
 
         return [
             Drink(
@@ -120,9 +144,15 @@ class Tami4EdgeAPI:
     def get_water_quality(self) -> WaterQuality:
         """Fetch the water quality."""
 
-        response = self._session.get(
-            f"{self.ENDPOINT}/api/v2/customer/waterQuality"
+        response = request_wrapper(
+            "GET",
+            f"{self.ENDPOINT}/api/v2/customer/waterQuality",
+            session=self._session,
+            exception=exceptions.APIRequestFailedException(
+                "Water Quality Request Failed"
+            ),
         ).json()
+
         _filter = response["filterInfo"]
         uv = response["uvInfo"]
         return WaterQuality(
@@ -141,24 +171,28 @@ class Tami4EdgeAPI:
 
     def prepare_drink(self, drink: Drink) -> None:
         """Prepare a drink."""
-        try:
-            self._session.post(
-                f"{self.ENDPOINT}/api/v1/device/{self.device.id}/prepareDrink/{drink.id}"
-            )
-        except RequestException as ex:
-            raise APIRequestFailedException("Drink Prepare Request Failed") from ex
+
+        request_wrapper(
+            "POST",
+            f"{self.ENDPOINT}/api/v1/device/{self.device.id}/prepareDrink/{drink.id}",
+            session=self._session,
+            exception=exceptions.APIRequestFailedException(
+                "Drink Prepare Request Failed"
+            ),
+        )
 
     def boil_water(self) -> None:
         """Boil water."""
-        try:
-            response = self._session.post(
-                f"{self.ENDPOINT}/api/v1/device/{self.device.id}/startBoiling"
-            )
-        except RequestException as ex:
-            raise APIRequestFailedException("Boil Water Request Failed") from ex
+
+        response = request_wrapper(
+            "POST",
+            f"{self.ENDPOINT}/api/v1/device/{self.device.id}/startBoiling",
+            session=self._session,
+            exception=exceptions.APIRequestFailedException("Boil Water Request Failed"),
+        )
 
         if response.status_code == 502:
-            logging.info("Water is already boiled")
+            logging.info("Water is already boiling")
 
     @staticmethod
     def _get_recaptcha_token() -> str:
@@ -167,41 +201,41 @@ class Tami4EdgeAPI:
     @staticmethod
     def request_otp(phone_number: str) -> None:
         """Request an OTP code."""
-        try:
-            response = requests.post(
-                f"{Tami4EdgeAPI.ENDPOINT}/public/phone/generateOTP",
-                json={
-                    "phoneNumber": phone_number,
-                    "reCaptchaToken": Tami4EdgeAPI._get_recaptcha_token(),
-                },
-            ).json()
-        except RequestException as ex:
-            raise OTPFailedException("OTP Request Failed") from ex
+
+        response = request_wrapper(
+            "POST",
+            f"{Tami4EdgeAPI.ENDPOINT}/public/phone/generateOTP",
+            json={
+                "phoneNumber": phone_number,
+                "reCaptchaToken": Tami4EdgeAPI._get_recaptcha_token(),
+            },
+            exception=exceptions.OTPFailedException("OTP Request Failed"),
+        ).json()
 
         if not response["success"]:
             logging.error("OTP Request Failed, response: %s", response)
-            raise OTPFailedException("OTP Request Failed")
+            raise exceptions.OTPFailedException("OTP Request Failed")
 
         logging.info("OTP Request Successful")
 
     @staticmethod
     def submit_otp(phone_number: str, otp: int) -> str:
         """Submit an OTP code."""
-        try:
-            response = requests.post(
-                f"{Tami4EdgeAPI.ENDPOINT}/public/phone/submitOTP",
-                json={
-                    "phoneNumber": phone_number,
-                    "code": otp,
-                    "reCaptchaToken": Tami4EdgeAPI._get_recaptcha_token(),
-                },
-            ).json()
-        except RequestException as ex:
-            raise OTPFailedException("OTP Submission Failed") from ex
 
-        if not response["access_token"]:
+        response = request_wrapper(
+            "POST",
+            f"{Tami4EdgeAPI.ENDPOINT}/public/phone/submitOTP",
+            json={
+                "phoneNumber": phone_number,
+                "code": otp,
+                "reCaptchaToken": Tami4EdgeAPI._get_recaptcha_token(),
+            },
+            exception=exceptions.OTPFailedException("OTP Submission Failed"),
+        ).json()
+
+        if "access_token" not in response:
             logging.error("OTP Submission Failed, response: %s", response)
-            raise OTPFailedException("OTP Submission Failed")
+            raise exceptions.OTPFailedException("OTP Submission Failed")
 
         logging.info("OTP Submission Successful")
 
