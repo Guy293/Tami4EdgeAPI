@@ -2,6 +2,8 @@
 ![GitHub release](https://img.shields.io/github/v/release/Guy293/Tami4EdgeAPI)
 ![workflow](https://github.com/Guy293/Tami4EdgeAPI/actions/workflows/python-publish.yml/badge.svg)
 
+### **Available as a native integration in Home Assistant!**
+
 [![tami4.png](https://i.postimg.cc/GhywJQDz/tami4.png)](https://postimg.cc/Tpf4TnCW)
 
 Tami4EdgeAPI can be used to control Strauss'es Tami4 Edge / Edge+ devices.  
