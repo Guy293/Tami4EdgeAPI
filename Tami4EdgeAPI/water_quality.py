@@ -4,12 +4,12 @@ from datetime import date
 
 @dataclass
 class QualityInfo:
-    last_replacement: date
+    # last_replacement: date
     upcoming_replacement: date
-    status: str
+    installed: bool
 
     def __post_init__(self) -> None:
-        self.last_replacement = date.fromtimestamp(self.last_replacement / 1000)
+        # self.last_replacement = date.fromtimestamp(self.last_replacement / 1000)
         self.upcoming_replacement = date.fromtimestamp(self.upcoming_replacement / 1000)
 
 

@@ -1,14 +1,19 @@
+import datetime
+import json
 import logging
+from json import JSONDecodeError
 from typing import Callable, Optional
 
+import jwt
 import requests
 from pypasser import reCaptchaV3
 from requests.auth import AuthBase
-from requests.exceptions import JSONDecodeError, RequestException
+from requests.exceptions import RequestException
 from requests.models import PreparedRequest
 
 from Tami4EdgeAPI import exceptions
 from Tami4EdgeAPI.device import Device
+from Tami4EdgeAPI.device_metadata import DeviceMetadata
 from Tami4EdgeAPI.drink import Drink
 from Tami4EdgeAPI.token import Token
 from Tami4EdgeAPI.water_quality import UV, Filter, WaterQuality
@@ -44,6 +49,7 @@ class Tami4EdgeAPI:
     """Tami4Edge API Interface."""
 
     ENDPOINT = "https://swelcustomers.strauss-water.com"
+    AUTH_ENDPOINT = "https://authentication-prod.strauss-group.com"
     ANCHOR_URL = "https://www.google.com/recaptcha/enterprise/anchor?ar=1&k=6Lf-jYgUAAAAAEQiRRXezC9dfIQoxofIhqBnGisq&co=aHR0cHM6Ly93d3cudGFtaTQuY28uaWw6NDQz&hl=en&v=gWN_U6xTIPevg0vuq7g1hct0&size=invisible&cb=ji0lh9higcza"
 
     def __init__(self, refresh_token: str) -> None:
@@ -58,7 +64,7 @@ class Tami4EdgeAPI:
         # but /v2/ only supports one device.
         # Also, the app doesn't seem to support multiple devices at all.
         # So for now, we'll use the first device we get from the API.
-        self.device = self._get_devices()[0]
+        self.device_metadata = self._get_devices_metadata()[0]
 
     def get_access_token(self) -> str:
         """Get the access token, refreshing it if necessary."""
@@ -72,8 +78,9 @@ class Tami4EdgeAPI:
     def _request_new_token(self):
         response = request_wrapper(
             "POST",
-            f"{Tami4EdgeAPI.ENDPOINT}/public/token/refresh",
-            json={"token": self._token.refresh_token},
+            f"{Tami4EdgeAPI.AUTH_ENDPOINT}/api/v1/auth/token/refresh",
+            headers={"X-Api-Key": "96787682-rrzh-0995-v9sz-cfdad9ac7072"},
+            json={"refreshToken": self._token.refresh_token},
             exception=exceptions.TokenRefreshFailedException("Token Refresh Failed"),
         )
 
@@ -85,21 +92,30 @@ class Tami4EdgeAPI:
         except JSONDecodeError as ex:
             raise exceptions.TokenRefreshFailedException("Token Refresh Failed") from ex
 
-        if "access_token" not in response_json:
+        if "accessToken" not in response_json or "refreshToken" not in response_json:
             logging.error("Token Refresh Failed, response: %s", response_json)
             raise exceptions.TokenRefreshFailedException(
-                "Token Refresh Failed: No access_token key"
+                "Token Refresh Failed: No accessToken key"
             )
+
+        access_token = jwt.decode(
+            response_json["accessToken"], options={"verify_signature": False}
+        )
 
         logging.debug("Token Refresh Successful")
 
         self._token = Token(
-            refresh_token=response_json["refresh_token"],
-            access_token=response_json["access_token"],
-            expires_in=response_json["expires_in"],
+            # Replace refresh token only if we get a new one
+            refresh_token=(
+                response_json["refreshToken"]
+                if response_json["refreshToken"] is not None
+                else self._token.refresh_token
+            ),
+            access_token=response_json["accessToken"],
+            expires_at=datetime.datetime.fromtimestamp(access_token["exp"]),
         )
 
-    def _get_devices(self) -> list[Device]:
+    def _get_devices_metadata(self) -> list[DeviceMetadata]:
         response = request_wrapper(
             "GET",
             f"{self.ENDPOINT}/api/v1/device",
@@ -108,7 +124,7 @@ class Tami4EdgeAPI:
         )
 
         return [
-            Device(
+            DeviceMetadata(
                 id=d["id"],
                 name=d["name"],
                 connected=d["connected"],
@@ -119,17 +135,19 @@ class Tami4EdgeAPI:
             for d in response.json()
         ]
 
-    def get_drinks(self) -> list[Drink]:
-        """Fetch the drinks."""
+    def get_device(self) -> Device:
+        """Fetch device data."""
 
         response = request_wrapper(
             "GET",
-            f"{self.ENDPOINT}/api/v1/customer/drink",
+            f"{self.ENDPOINT}/api/v3/customer/mainPage/{self.device_metadata.psn}",
             session=self._session,
-            exception=exceptions.APIRequestFailedException("Drink Request Failed"),
-        )
+            exception=exceptions.APIRequestFailedException(
+                "Water Quality Request Failed"
+            ),
+        ).json()
 
-        return [
+        drinks = [
             Drink(
                 id=d["id"],
                 name=d["name"],
@@ -138,34 +156,28 @@ class Tami4EdgeAPI:
                 include_in_customer_statistics=d["includeInCustomerStatistics"],
                 default_drink=d["defaultDrink"],
             )
-            for d in response.json()["drinks"]
+            for d in response["drinks"]
         ]
 
-    def get_water_quality(self) -> WaterQuality:
-        """Fetch the water quality."""
+        dynamic_data = response["dynamicData"]
+        _filter = dynamic_data["filterInfo"]
+        uv = dynamic_data["uvInfo"]
 
-        response = request_wrapper(
-            "GET",
-            f"{self.ENDPOINT}/api/v2/customer/waterQuality",
-            session=self._session,
-            exception=exceptions.APIRequestFailedException(
-                "Water Quality Request Failed"
-            ),
-        ).json()
-
-        _filter = response["filterInfo"]
-        uv = response["uvInfo"]
-        return WaterQuality(
-            uv=UV(
-                last_replacement=uv["lastReplacement"],
-                upcoming_replacement=uv["upcomingReplacement"],
-                status=uv["status"],
-            ),
-            filter=Filter(
-                last_replacement=_filter["lastReplacement"],
-                upcoming_replacement=_filter["upcomingReplacement"],
-                status=_filter["status"],
-                milli_litters_passed=_filter["milliLittersPassed"],
+        return Device(
+            device_metadata=self.device_metadata,
+            drinks=drinks,
+            water_quality=WaterQuality(
+                uv=UV(
+                    # last_replacement=uv["lastReplacement"],
+                    upcoming_replacement=uv["upcomingReplacement"],
+                    installed=uv["installed"],
+                ),
+                filter=Filter(
+                    # last_replacement=_filter["lastReplacement"],
+                    upcoming_replacement=_filter["upcomingReplacement"],
+                    milli_litters_passed=_filter["milliLittersPassed"],
+                    installed=_filter["installed"],
+                ),
             ),
         )
 
@@ -174,7 +186,7 @@ class Tami4EdgeAPI:
 
         request_wrapper(
             "POST",
-            f"{self.ENDPOINT}/api/v1/device/{self.device.id}/prepareDrink/{drink.id}",
+            f"{self.ENDPOINT}/api/v1/device/{self.device_metadata.id}/prepareDrink/{drink.id}",
             session=self._session,
             exception=exceptions.APIRequestFailedException(
                 "Drink Prepare Request Failed"
@@ -186,7 +198,7 @@ class Tami4EdgeAPI:
 
         response = request_wrapper(
             "POST",
-            f"{self.ENDPOINT}/api/v1/device/{self.device.id}/startBoiling",
+            f"{self.ENDPOINT}/api/v1/device/{self.device_metadata.id}/startBoiling",
             session=self._session,
             exception=exceptions.APIRequestFailedException("Boil Water Request Failed"),
         )
@@ -204,16 +216,17 @@ class Tami4EdgeAPI:
 
         response = request_wrapper(
             "POST",
-            f"{Tami4EdgeAPI.ENDPOINT}/public/phone/generateOTP",
+            f"{Tami4EdgeAPI.AUTH_ENDPOINT}/api/v1/auth/otp/request",
+            headers={"X-Api-Key": "96787682-rrzh-0995-v9sz-cfdad9ac7072"},
             json={
-                "phoneNumber": phone_number,
+                "phone": phone_number,
                 "reCaptchaToken": Tami4EdgeAPI._get_recaptcha_token(),
             },
             exception=exceptions.OTPFailedException("OTP Request Failed"),
-        ).json()
+        )
 
-        if not response["success"]:
-            logging.error("OTP Request Failed, response: %s", response)
+        if response.status_code != 200:
+            logging.error("OTP Request Failed, response: %s", response.content)
             raise exceptions.OTPFailedException("OTP Request Failed")
 
         logging.info("OTP Request Successful")
@@ -224,19 +237,20 @@ class Tami4EdgeAPI:
 
         response = request_wrapper(
             "POST",
-            f"{Tami4EdgeAPI.ENDPOINT}/public/phone/submitOTP",
+            f"{Tami4EdgeAPI.AUTH_ENDPOINT}/api/v1/auth/otp/submit",
+            headers={"X-Api-Key": "96787682-rrzh-0995-v9sz-cfdad9ac7072"},
             json={
-                "phoneNumber": phone_number,
-                "code": otp,
+                "phone": phone_number,
+                "otp": otp,
                 "reCaptchaToken": Tami4EdgeAPI._get_recaptcha_token(),
             },
             exception=exceptions.OTPFailedException("OTP Submission Failed"),
         ).json()
 
-        if "access_token" not in response:
+        if "accessToken" not in response:
             logging.error("OTP Submission Failed, response: %s", response)
             raise exceptions.OTPFailedException("OTP Submission Failed")
 
         logging.info("OTP Submission Successful")
 
-        return response["refresh_token"]
+        return response["refreshToken"]

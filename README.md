@@ -34,7 +34,7 @@ Store the ``refresh_token`` somewhere safe, you will use it to authenticate with
 
 ```py
 edge = Tami4EdgeAPI(refresh_token)
-print(f"Bar Name: {edge.device.name}, Firmware Version: {edge.device.device_firmware}")
+print(f"Bar Name: {edge.device_metadata.name}, Firmware Version: {edge.device_metadata.device_firmware}")
 ```
 
 ### Boil Water
@@ -44,8 +44,8 @@ edge.boil_water()
 
 ### Get User Drinks
 ```py
-drinks = edge.get_drinks()
-for drink in drinks:
+device = edge.get_device()
+for drink in device.drinks:
   print(drink.name)
 ```
 
@@ -56,9 +56,9 @@ edge.prepare_drink(drink)
 
 ### Get Filter / UV Information
 ```py
-water_quality = edge.get_water_quality()
+water_quality = device.water_quality
 water_quality.uv.last_replacement
 water_quality.uv.upcoming_replacement
-water_quality.uv.status
+water_quality.uv.installed
 water_quality.filter.milli_litters_passed
 ```

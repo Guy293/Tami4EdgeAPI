@@ -12,5 +12,5 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     url="https://github.com/Guy293/Tami4EdgeAPI",
     packages=setuptools.find_packages(),
-    install_requires=["requests", "pypasser"],
+    install_requires=["requests", "pypasser", "pyjwt"],
 )
