@@ -5,7 +5,7 @@ with open("README.md", "r") as f:
 
 setuptools.setup(
     name="Tami4EdgeAPI",
-    version="2.1",
+    version="3.0",
     author="Guy Shefer",
     license="MIT",
     long_description=long_description,
